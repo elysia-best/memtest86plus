@@ -17,6 +17,7 @@
 #if defined(__loongarch_lp64)
 #include "registers.h"
 #include <larchintrin.h>
+#include "loongarch_oldworld.h"
 #endif
 
 #if defined(__aarch64__)
@@ -269,6 +270,15 @@ typedef struct {
     uint32_t    core_id;
     uint32_t    flags;
 } madt_processor_entry_t;
+
+/* BPI1000 firmware emitted the old ACPI type-0 Local APIC record. The
+ * Linux/AOSC compatibility patch maps its APIC id and flags to a LoongArch
+ * Core PIC record; we perform that mapping while scanning, without building
+ * a replacement table. */
+typedef struct __attribute__((packed)) {
+    uint8_t type, length, acpi_id, apic_id;
+    uint32_t flags;
+} madt_legacy_local_apic_t;
 #pragma pack ()
 
 #elif defined(__aarch64__)
@@ -656,6 +666,7 @@ static bool find_cpus_in_madt(void)
         }
 #elif defined(__loongarch_lp64)
         if (entry_header->type == MADT_CORE_PIC) {
+            if (entry_header->length != sizeof(madt_processor_entry_t)) return false;
             madt_processor_entry_t *entry = (madt_processor_entry_t *)tab_entry_ptr;
             if (entry->flags & (MADT_PF_ENABLED|MADT_PF_ONLINE_CAPABLE)) {
                 if (num_available_cpus < MAX_CPUS) {
@@ -664,6 +675,16 @@ static bool find_cpus_in_madt(void)
                     if (found_cpus > 0) {
                         num_available_cpus++;
                     }
+                }
+                found_cpus++;
+            }
+        } else if (loongarch_bpi1000() && entry_header->type == MADT_PROCESSOR) {
+            if (entry_header->length != sizeof(madt_legacy_local_apic_t)) return false;
+            madt_legacy_local_apic_t *entry = (madt_legacy_local_apic_t *)tab_entry_ptr;
+            if (entry->flags & (MADT_PF_ENABLED|MADT_PF_ONLINE_CAPABLE)) {
+                if (num_available_cpus < MAX_CPUS) {
+                    cpu_num_to_apic_id[found_cpus] = entry->apic_id;
+                    if (found_cpus > 0) num_available_cpus++;
                 }
                 found_cpus++;
             }

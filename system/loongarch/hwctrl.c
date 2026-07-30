@@ -11,6 +11,7 @@
 #include "unistd.h"
 
 #include "hwctrl.h"
+#include "loongarch_oldworld.h"
 
 //------------------------------------------------------------------------------
 // Private Variables
@@ -27,9 +28,10 @@ void hwctrl_init(void)
     boot_params_t *boot_params = (boot_params_t *)boot_params_addr;
     if (boot_params->efi_info.loader_signature == EFI64_LOADER_SIGNATURE) {
         uintptr_t system_table_addr = (uintptr_t)boot_params->efi_info.sys_tab_hi << 32 | boot_params->efi_info.sys_tab;
+        system_table_addr = loongarch_phys_addr(system_table_addr);
         if (system_table_addr != 0) {
             efi64_system_table_t *sys_table = (efi64_system_table_t *)system_table_addr;
-            efi_rs_table = (efi_runtime_services_t *)sys_table->runtime_services;
+            efi_rs_table = (efi_runtime_services_t *)loongarch_phys_addr((uintptr_t)sys_table->runtime_services);
         }
     }
 }

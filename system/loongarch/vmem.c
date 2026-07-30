@@ -11,6 +11,7 @@
 #include "cpuid.h"
 
 #include "vmem.h"
+#include "loongarch_oldworld.h"
 
 extern bool map_numa_memory_range;
 extern uint8_t highest_map_bit;
@@ -42,6 +43,7 @@ bool paging_incomplete = false;     // never set on this architecture
 
 uintptr_t map_region(uintptr_t base_addr, size_t size __attribute__((unused)), bool only_for_startup __attribute__((unused)))
 {
+    base_addr = loongarch_phys_addr(base_addr);
     const bool is_2k_or_3b6000m =
         (strstr(cpuid_info.brand_id.str, "2K") != NULL) ||
         (strstr(cpuid_info.brand_id.str, "3B6000M") != NULL);
