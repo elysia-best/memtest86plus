@@ -15,6 +15,9 @@
 #include "memsize.h"
 
 #include "string.h"
+#if defined(__loongarch_lp64)
+#include "loongarch_oldworld.h"
+#endif
 
 //------------------------------------------------------------------------------
 // Constants
@@ -685,6 +688,10 @@ static efi_status_t set_efi_info_and_exit_boot_services(efi_handle_t handle, boo
         goto fail;
     }
 
+#if defined(__loongarch_lp64)
+    loongarch_oldworld_efi_fix(mem_map, mem_map_size, mem_desc_size);
+#endif
+
 #if (ARCH_BITS == 64)
     boot_params->efi_info.loader_signature  = EFI64_LOADER_SIGNATURE;
 #else
@@ -750,6 +757,9 @@ static void set_e820_map(boot_params_t *params)
         num_entries++;
     }
     params->e820_entries = num_entries;
+#if defined(__loongarch_lp64)
+    loongarch_oldworld_set_e820(params);
+#endif
 }
 
 //------------------------------------------------------------------------------
@@ -761,6 +771,12 @@ boot_params_t *efi_setup(efi_handle_t handle, efi_system_table_t *sys_table_arg,
     efi_status_t status;
 
     sys_table = sys_table_arg;
+#if defined(__loongarch_lp64)
+    loongarch_oldworld_detect();
+    sys_table = (efi_system_table_t *)loongarch_phys_addr((uintptr_t)sys_table);
+    loongarch_oldworld_parse(sys_table);
+    boot_params = (boot_params_t *)loongarch_phys_addr((uintptr_t)boot_params);
+#endif
     if (sys_table->header.signature != EFI_SYSTEM_TABLE_SIGNATURE) {
         print_string("bad system table signature\n");
         goto fail;

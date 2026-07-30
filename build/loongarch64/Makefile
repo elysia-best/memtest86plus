@@ -89,7 +89,7 @@ APP_OBJS = app/badram.o \
            app/reports.o \
            app/loongarch/interrupt.o
 
-OBJS = boot/startup.o boot/efisetup.o $(SYS_OBJS) $(IMC_OBJS) $(LIB_OBJS) $(TST_OBJS) $(APP_OBJS)
+OBJS = boot/startup.o boot/efisetup.o boot/loongarch_oldworld.o $(SYS_OBJS) $(IMC_OBJS) $(LIB_OBJS) $(TST_OBJS) $(APP_OBJS)
 
 all: mt86plus
 
@@ -125,6 +125,10 @@ boot/loongarch/%.o: ../../boot/loongarch/%.S ../../boot/boot.h app/build_version
 boot/efisetup.o: ../../boot/efisetup.c
 	@mkdir -p boot
 	$(CC) -c $(CFLAGS) $(OPT_SMALL)  $(INC_DIRS)  -o $@ $< -MMD -MP -MT $@ -MF $(@:.o=.d)
+
+boot/loongarch_oldworld.o: ../../boot/loongarch_oldworld.c
+	@mkdir -p boot
+	$(CC) -c $(CFLAGS) $(OPT_SMALL) $(INC_DIRS) -o $@ $< -MMD -MP -MT $@ -MF $(@:.o=.d)
 
 system/reloc.o: ../../system/reloc64.c
 	@mkdir -p system
