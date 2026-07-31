@@ -772,7 +772,7 @@ boot_params_t *efi_setup(efi_handle_t handle, efi_system_table_t *sys_table_arg,
 
     sys_table = sys_table_arg;
 #if defined(__loongarch_lp64)
-    loongarch_oldworld_detect();
+    loongarch_oldworld_detect(sys_table_arg);
     sys_table = (efi_system_table_t *)loongarch_phys_addr((uintptr_t)sys_table);
     loongarch_oldworld_parse(sys_table);
     boot_params = (boot_params_t *)loongarch_phys_addr((uintptr_t)boot_params);

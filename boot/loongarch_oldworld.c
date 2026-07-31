@@ -33,19 +33,26 @@ static size_t bpi_range_count;
 static uint8_t checksum(const void *p, size_t n) { const uint8_t *b = p; uint8_t s = 0; while (n--) s += *b++; return s; }
 static bool add_overflow(uint64_t a, uint64_t b, uint64_t *out) { if (b > UINT64_MAX - a) return true; *out = a + b; return false; }
 
-bool loongarch_oldworld_detect(void)
+bool loongarch_oldworld_detect(const void *system_table)
 {
 #if defined(__loongarch_lp64)
-    /* OldWorld EFI enters with DMW1 enabled for PLV0. This is the same
-     * discriminator used by the upstream-derived LoongArch EFI stub patch. */
-    oldworld = !!(__csrrd_d(LOONGARCH_CSR_DMWIN1) & UINT64_C(0x10));
+    /* Linux's legacy-firmware path uses DMW1.PLV0 (bit 0). QEMU/EDK2 also
+     * leaves that bit set, so require the EFI entry pointer to be in the
+     * DMW high-half window before treating it as an OldWorld address. */
+    oldworld = !!(__csrrd_d(LOONGARCH_CSR_DMWIN1) & UINT64_C(0x1)) &&
+               (((uintptr_t)system_table & DMW1_VA) != 0);
 #else
     oldworld = false;
 #endif
     return oldworld;
 }
 bool loongarch_oldworld_present(void) { return oldworld; }
-uintptr_t loongarch_phys_addr(uintptr_t addr) { return (oldworld && (addr & DMW1_VA)) ? (addr & ~DMW1_VA) : addr; }
+uintptr_t loongarch_phys_addr(uintptr_t addr)
+{
+    /* Match Linux TO_PHYS(): DMW virtual addresses carry a VSEG prefix;
+     * physical addresses are limited to the implemented 48-bit space. */
+    return oldworld ? (addr & ((UINT64_C(1) << 48) - 1)) : addr;
+}
 
 static bool guid_equal(const efi_guid_t *a, const efi_guid_t *b) { return memcmp(a, b, sizeof(*a)) == 0; }
 
