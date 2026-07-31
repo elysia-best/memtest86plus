@@ -8,12 +8,18 @@
 #include "string.h"
 #include "loongarch_oldworld.h"
 
+#include "acpi.h"
+#include "io.h"
+#include "mmio.h"
+#include "pci.h"
+#include "unistd.h"
+#include "vmem.h"
+
 #if defined(__loongarch_lp64)
 #include <larchintrin.h>
 #include "registers.h"
 #endif
 
-#define DMW1_VA UINT64_C(0x8000000000000000)
 #define BPI_MAX_ENTRIES 128
 #define BPI_MEM_SIG UINT64_C(0x000000004d454d)
 
@@ -26,21 +32,24 @@ typedef struct __attribute__((packed)) { uint64_t signature, systemtable, extlis
 typedef struct __attribute__((packed)) { uint32_t type; uint64_t start, size; } bpi_mem_entry_t;
 typedef struct __attribute__((packed)) { bpi_ext_hdr_t h; uint8_t count; bpi_mem_entry_t entries[]; } bpi_mem_t;
 typedef struct { uint64_t start, end; uint32_t type; } bpi_range_t;
+typedef struct __attribute__((packed)) { uint64_t base_addr; uint16_t segment; uint8_t start_bus, end_bus; uint32_t reserved; } mcfg_entry_t;
 
 static bpi_range_t bpi_ranges[BPI_MAX_ENTRIES];
 static size_t bpi_range_count;
+static uintptr_t ecam_base;
+static int ecam_start_bus;
+static int ecam_end_bus = -1;
+static bool ecam_initialized;
 
 static uint8_t checksum(const void *p, size_t n) { const uint8_t *b = p; uint8_t s = 0; while (n--) s += *b++; return s; }
 static bool add_overflow(uint64_t a, uint64_t b, uint64_t *out) { if (b > UINT64_MAX - a) return true; *out = a + b; return false; }
 
-bool loongarch_oldworld_detect(const void *system_table)
+bool loongarch_oldworld_detect(void)
 {
 #if defined(__loongarch_lp64)
-    /* Linux's legacy-firmware path uses DMW1.PLV0 (bit 0). QEMU/EDK2 also
-     * leaves that bit set, so require the EFI entry pointer to be in the
-     * DMW high-half window before treating it as an OldWorld address. */
-    oldworld = !!(__csrrd_d(LOONGARCH_CSR_DMWIN1) & UINT64_C(0x1)) &&
-               (((uintptr_t)system_table & DMW1_VA) != 0);
+    /* Match the Linux EFI stub and legacy GRUB port: OldWorld firmware
+     * enters with DMW1 enabled for PLV0. */
+    oldworld = !!(__csrrd_d(LOONGARCH_CSR_DMWIN1) & UINT64_C(0x1));
 #else
     oldworld = false;
 #endif
@@ -52,6 +61,44 @@ uintptr_t loongarch_phys_addr(uintptr_t addr)
     /* Match Linux TO_PHYS(): DMW virtual addresses carry a VSEG prefix;
      * physical addresses are limited to the implemented 48-bit space. */
     return oldworld ? (addr & ((UINT64_C(1) << 48) - 1)) : addr;
+}
+
+static void loongarch_oldworld_pci_init(void)
+{
+    if (ecam_initialized) return;
+    ecam_initialized = true;
+
+    if (acpi_config.mcfg_addr == 0) return;
+
+    rsdt_header_t *mcfg = (rsdt_header_t *)map_region(acpi_config.mcfg_addr, sizeof(*mcfg), true);
+    if (mcfg == NULL || mcfg->length < sizeof(*mcfg) + 8) return;
+
+    mcfg = (rsdt_header_t *)map_region(acpi_config.mcfg_addr, mcfg->length, true);
+    if (mcfg == NULL || acpi_checksum(mcfg, mcfg->length) != 0) return;
+
+    uintptr_t first_entry = (uintptr_t)mcfg + sizeof(*mcfg) + 8;
+    int num_entries = (mcfg->length - sizeof(*mcfg) - 8) / sizeof(mcfg_entry_t);
+    for (int i = 0; i < num_entries; i++) {
+        mcfg_entry_t *entry = (mcfg_entry_t *)(first_entry + i * sizeof(*entry));
+        if (entry->segment != 0 || entry->start_bus > entry->end_bus) continue;
+
+        size_t size = ((size_t)(entry->end_bus - entry->start_bus) + 1) << 20;
+        ecam_base = map_region(entry->base_addr, size, false);
+        ecam_start_bus = entry->start_bus;
+        ecam_end_bus = entry->end_bus;
+        return;
+    }
+}
+
+static uintptr_t loongarch_oldworld_pci_addr(int bus, int dev, int func, int reg)
+{
+    if (!ecam_initialized) loongarch_oldworld_pci_init();
+    if (ecam_base == 0 || bus < ecam_start_bus || bus > ecam_end_bus) return 0;
+
+    return ecam_base + ((uintptr_t)(bus - ecam_start_bus) << 20)
+                     + ((uintptr_t)dev << 15)
+                     + ((uintptr_t)func << 12)
+                     + (reg & 0xfff);
 }
 
 static bool guid_equal(const efi_guid_t *a, const efi_guid_t *b) { return memcmp(a, b, sizeof(*a)) == 0; }
@@ -147,3 +194,61 @@ void loongarch_oldworld_set_e820(boot_params_t *p)
 }
 int loongarch_bpi_version(void) { return bpi_version_value; }
 bool loongarch_bpi1000(void) { return bpi_version_value == 1000; }
+
+void pci_init(void)
+{
+    // PCI probing starts before global ACPI initialization in app/main.c.
+    acpi_init();
+    loongarch_oldworld_pci_init();
+}
+
+uint8_t pci_config_read8(int bus, int dev, int func, int reg)
+{
+    uintptr_t addr = loongarch_oldworld_pci_addr(bus, dev, func, reg);
+    return addr ? mmio_read8((uint8_t *)addr) : 0xFF;
+}
+
+uint16_t pci_config_read16(int bus, int dev, int func, int reg)
+{
+    uintptr_t addr = loongarch_oldworld_pci_addr(bus, dev, func, reg);
+    return addr ? mmio_read16((uint16_t *)addr) : 0xFFFF;
+}
+
+uint32_t pci_config_read32(int bus, int dev, int func, int reg)
+{
+    uintptr_t addr = loongarch_oldworld_pci_addr(bus, dev, func, reg);
+    return addr ? mmio_read32((uint32_t *)addr) : 0xFFFFFFFF;
+}
+
+void pci_config_write8(int bus, int dev, int func, int reg, uint8_t value)
+{
+    uintptr_t addr = loongarch_oldworld_pci_addr(bus, dev, func, reg);
+    if (addr) mmio_write8((uint8_t *)addr, value);
+}
+
+void pci_config_write16(int bus, int dev, int func, int reg, uint16_t value)
+{
+    uintptr_t addr = loongarch_oldworld_pci_addr(bus, dev, func, reg);
+    if (addr) mmio_write16((uint16_t *)addr, value);
+}
+
+void pci_config_write32(int bus, int dev, int func, int reg, uint32_t value)
+{
+    uintptr_t addr = loongarch_oldworld_pci_addr(bus, dev, func, reg);
+    if (addr) mmio_write32((uint32_t *)addr, value);
+}
+
+void lpc_outb(uint8_t cmd, uint8_t data)
+{
+    outb(cmd, 0x2E);
+    usleep(100);
+    outb(data, 0x2F);
+    usleep(100);
+}
+
+uint8_t lpc_inb(uint8_t reg)
+{
+    outb(reg, 0x2E);
+    usleep(100);
+    return inb(0x2F);
+}
